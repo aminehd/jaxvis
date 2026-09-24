@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaxvis"
+version = "0.1.0"
+description = "Animate any JAX function by interpreting its jaxpr"
+requires-python = ">=3.9"
+dependencies = ["jax", "numpy", "pillow"]
+
+[project.scripts]
+jaxvis = "jaxvis.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
