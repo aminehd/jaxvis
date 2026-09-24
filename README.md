@@ -4,8 +4,37 @@ Animate **any** JAX function by interpreting its jaxpr. Install once, then it
 works on functions it has never seen.
 
 ```bash
-pip install -e jaxvis-pkg
+pip install -e .
 ```
+
+## An example: whitening
+
+<img src="whiten.gif" width="420" align="right"/>
+
+Data rarely arrives centred and round. Subtracting the mean slides the cloud to
+the origin; undoing the covariance unstretches it. Decorate the function and
+jaxvis animates the transformation it performs on its input — here coloured by
+the angle each point started at.
+
+```python
+tilted = rng.multivariate_normal([0.9, -0.5], [[2.2, 1.6], [1.6, 1.4]], n)
+mu = tilted.mean(0)
+chol = np.linalg.cholesky(np.cov(tilted.T))
+unmix = np.linalg.inv(chol).T
+
+ang = (np.arctan2(tilted[:, 1] - mu[1], tilted[:, 0] - mu[0]) + np.pi) / (2 * np.pi)
+wheel = np.stack([np.sin(np.pi * ang), np.sin(np.pi * (ang + 1 / 3)),
+                  np.sin(np.pi * (ang + 2 / 3))], 1) ** 2
+wheel = wheel / wheel.max(1, keepdims=True)
+
+
+@jaxvis.draw(jnp.asarray(tilted), palette="bloom", colors=wheel, blend="mean",
+             frame="fixed", **cloud)
+def whiten(x):
+    return (x - mu) @ unmix
+```
+
+<br clear="all"/>
 
 ## Three ways in
 
