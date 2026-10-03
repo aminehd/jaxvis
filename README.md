@@ -4,7 +4,8 @@ Animate **any** JAX function by interpreting its jaxpr. Install once, then it
 works on functions it has never seen.
 
 ```bash
-pip install -e .
+git clone https://github.com/aminehd/jaxvis
+cd jaxvis && pip install -e .
 ```
 
 ## An example: whitening
@@ -12,22 +13,22 @@ pip install -e .
 <img src="whiten.gif" width="420" align="right"/>
 
 ```python
-tilted = rng.multivariate_normal([0.9, -0.5], [[2.2, 1.6], [1.6, 1.4]], n)
-mu = tilted.mean(0)
-chol = np.linalg.cholesky(np.cov(tilted.T))
-unmix = np.linalg.inv(chol).T
+import numpy as np, jaxvis
+from jaxvis import data, tint
 
-ang = (np.arctan2(tilted[:, 1] - mu[1], tilted[:, 0] - mu[0]) + np.pi) / (2 * np.pi)
-wheel = np.stack([np.sin(np.pi * ang), np.sin(np.pi * (ang + 1 / 3)),
-                  np.sin(np.pi * (ang + 2 / 3))], 1) ** 2
-wheel = wheel / wheel.max(1, keepdims=True)
+x = data.tilted(40_000)
+mu = np.asarray(x).mean(0)
+unmix = np.linalg.inv(np.linalg.cholesky(np.cov(np.asarray(x).T))).T
 
 
-@jaxvis.draw(jnp.asarray(tilted), palette="bloom", colors=wheel, blend="mean",
-             frame="fixed", **cloud)
-def whiten(x):
-    return (x - mu) @ unmix
+@jaxvis.draw(x, colors=tint.by_angle(x), frame="fixed", **jaxvis.cloud(x))
+def whiten(p):
+    return (p - mu) @ unmix
 ```
+
+`data` gives you an input, `tint` gives each point a colour so the motion is
+visible, and `cloud()` is the render options you would otherwise retype every
+time. What is left is the formula.
 
 <br clear="all"/>
 

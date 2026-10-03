@@ -21,9 +21,10 @@ from .render import (morph, save_gif, colour, code_panel, side_by_side,
                      linear_mean, smoothstep, blurred, ease, wave_ease, phase_field)
 from .scene import Scene, points, heatmap, strip, flow
 from .explore import explore, probe, discreteness
+from . import data, tint
 
 __all__ = ["visualize", "animate", "draw", "draw_field", "draw_sim",
-           "output_to",
+           "output_to", "cloud", "data", "tint",
            "trace_values", "pick",
            "morph", "save_gif", "colour", "code_panel", "side_by_side",
            "Scene", "points", "heatmap", "strip", "flow",
@@ -246,6 +247,25 @@ def animate(out="jaxvis.gif", **vopts):
 
 _OUT = [None]
 
+
+
+def cloud(x, **over):
+    """Render options for a 2-D point cloud, so examples stop repeating them.
+
+        @jaxvis.draw(x, colors=tint.by_angle(x), **jaxvis.cloud(x))
+        def whiten(p):
+            ...
+
+    Pass the input itself (or just its length). Anything you name as a
+    keyword wins, so `jaxvis.cloud(x, size=420, frame="fixed")` is the usual
+    way to deviate.
+    """
+    n = len(x) if hasattr(x, "__len__") else int(x)
+    o = dict(rep={(n, 2): "points"}, only="points", structural=True,
+             size=640, tween=30, hold=8, duration=55,
+             palette="bloom", blend="mean")
+    o.update(over)
+    return o
 
 def output_to(directory):
     """Send every later `@draw` into this directory. Set it once per file.
