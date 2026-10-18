@@ -21,10 +21,12 @@ from .render import (morph, save_gif, colour, code_panel, side_by_side,
                      linear_mean, smoothstep, blurred, ease, wave_ease, phase_field)
 from .scene import Scene, points, heatmap, strip, flow
 from .explore import explore, probe, discreteness
+from .links import impact, grains
 from . import data, tint
 
 __all__ = ["visualize", "animate", "draw", "draw_field", "draw_sim",
-           "output_to", "cloud", "data", "tint",
+           "output_to", "cloud", "curve", "rail", "entries", "impact", "grains",
+           "analyze", "data", "tint",
            "trace_values", "pick",
            "morph", "save_gif", "colour", "code_panel", "side_by_side",
            "Scene", "points", "heatmap", "strip", "flow",
@@ -37,7 +39,8 @@ def visualize(f, *args, out="jaxvis.gif", size=460, hold=6, tween=14,
               structural=False, only=None, code=False, rep=None,
               samples=8, shutter=1.5, ops=None, link=8,
               stagger="auto", spread=0.65, g=2.0, rep_kw=None,
-              colors=None, blend="mean", frame="auto", gain=None, **kw):
+              colors=None, blend="mean", frame="auto", gain=None,
+              lift=False, **kw):
     """Run `f`, draw every intermediate, write a GIF. Returns the path.
 
     value_morph=True animates each OPERATION: when an input shares the output's
@@ -88,6 +91,26 @@ def visualize(f, *args, out="jaxvis.gif", size=460, hold=6, tween=14,
             f"step away. `only` matches REP names (points, heatmap, liquid, "
             f"strip, batch, warp); `ops` matches PRIMITIVE names (mul, add, "
             f"sin...). Run with verbose=True to see what this function has.")
+
+    if lift and steps:
+        # The first step has nothing to morph FROM, so it simply appears.
+        # `lift` gives it a start: a flat line at zero that rises into the
+        # data. For a 1-D graph that is the move worth watching.
+        #
+        # lift="keep" keeps the bare input as its own step, so the clip reads
+        # flat -> y = x -> first operation. lift=True drops it: on a y-window
+        # chosen to fit f, the identity usually runs off the top and bottom
+        # of the frame.
+        def _flat(a):
+            z = np.array(a, dtype=float, copy=True)
+            if z.ndim == 2 and z.shape[1] >= 2:
+                z[:, 1] = 0.0                 # (x, y) pairs: keep x, drop y
+            else:
+                z[...] = 0.0
+            return z
+        if lift != "keep" and len(steps) > 1 and steps[0].name == "input":
+            steps = steps[1:]
+        steps = [steps[0]._replace(src=_flat(steps[0].out))] + steps[1:]
     # One window for every point cloud in the clip, unless frame="auto".
     # Re-framing each step would cancel out translations and uniform scalings
     # -- a subtract-the-mean or divide-by-a-constant step would draw as
@@ -266,6 +289,93 @@ def cloud(x, **over):
              palette="bloom", blend="mean")
     o.update(over)
     return o
+
+
+def curve(x, ylim=None, **over):
+    """Render options for a 1-D graph, the way `cloud` does for a cloud.
+
+        x = jaxvis.rail(-4, 4, 400)
+
+        @jaxvis.draw(x, **jaxvis.curve(x, ylim=(-1.5, 1.5)))
+        def gelu(p):
+            return 0.5 * p * (1 + jnp.tanh(0.797 * (p + 0.0447 * p ** 3)))
+
+    Every intermediate is drawn as a line over the SAME x, so each primitive
+    bends the curve you are already looking at. The input draws as y = x, and
+    `lift` starts it flat at zero so even that first step is a move.
+
+    `hold` is how many frames each value RESTS at before the next operation
+    starts, and `tween` is how many frames the operation itself takes. Raise
+    `hold` to give every stop a beat; raise `tween` to make the move slower.
+    `duration` is milliseconds per frame, so it stretches both at once.
+
+    `ylim` is the one setting worth being deliberate about. Without it every
+    frame rescales itself, and a step that only changes magnitude -- `/ 3`,
+    `* 2` -- animates as nothing happening at all. Give it a window a little
+    wider than the function and the scale is yours to read.
+    """
+    n = len(x) if hasattr(x, "__len__") else int(x)
+    xa = np.asarray(x, dtype=float)
+    xa = xa[:, 0] if xa.ndim == 2 else xa.reshape(-1)
+    rk = dict(x=xa)
+    if ylim is not None:
+        rk["ylim"] = tuple(ylim)
+    # Options the RENDERER takes go to the renderer. Without this they land
+    # in save_gif() as unknown keywords, which is a confusing place to find
+    # out that `fill` is not a GIF setting.
+    for k in ("width", "sweep", "axes", "fill", "edge", "grid"):
+        if k in over:
+            rk[k] = over.pop(k)
+    rk.update(over.pop("rep_kw", None) or {})
+    o = dict(rep={(n, 1): "curve", (n,): "curve", (n, 2): "curve"},
+             only="curve", structural=True, lift="keep", rep_kw=rk,
+             size=640, tween=30, hold=22, duration=55, palette="vapor")
+    o.update(over)
+    return o
+
+
+
+def entries(x=None, **over):
+    """Render options for a vector or matrix drawn ENTRY BY ENTRY.
+
+        v = jnp.array([...])
+
+        @jaxvis.analyze(v, **jaxvis.entries(palette="ultra"))
+        def softmax(a):
+            e = jnp.exp(a - a.max())
+            return e / e.sum()
+
+    Every intermediate is drawn as one disc per number -- size for
+    magnitude, colour for value, and a faint empty slot wherever a number
+    went to zero. This is the lens for linear algebra, where an operation
+    is a rearrangement of n separate numbers and you want to watch which
+    slot each one landed in.
+
+    A matrix draws as a grid of the same discs, so `M @ v` can show you the
+    matrix, the vector and the result in the same vocabulary.
+    """
+    o = dict(rep="cells", structural=True, lift="keep",
+             size=640, tween=26, hold=20, duration=55, palette="ultra")
+    rk = {}
+    for k in ("slots", "area", "gap", "aa", "floor"):
+        if k in over:
+            rk[k] = over.pop(k)
+    rk.update(over.pop("rep_kw", None) or {})
+    if rk:
+        o["rep_kw"] = rk
+    o.update(over)
+    return o
+
+
+def rail(lo, hi, n=400):
+    """`n` evenly spaced x values as an (n, 1) column -- the input to a graph.
+
+    A column, not a flat array, so a function written for points still reads
+    naturally: every operation is elementwise on one coordinate.
+    """
+    import jax.numpy as jnp
+    return jnp.linspace(lo, hi, n)[:, None]
+
 
 def output_to(directory):
     """Send every later `@draw` into this directory. Set it once per file.
@@ -501,3 +611,9 @@ def draw_sim(init, frames=90, every=40, show=None, name=None, size=680,
         print(f"  {tag}.gif  ({frames} frames, {frames * every:,} solver steps)")
         return step
     return deco
+
+
+# `draw` says what it does; `analyze` says what it is for. Same function --
+# every existing @jaxvis.draw keeps working, and new code can read as what
+# it actually is: taking a function apart to see how it behaves.
+analyze = draw

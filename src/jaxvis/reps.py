@@ -165,6 +165,210 @@ def as_points_rgb(a, values, S, gain=3.0, onto=None, blend="mass",
     return np.clip(col * np.clip(b / (hi + 1e-9), 0, 1)[..., None], 0, 1)
 
 
+def as_curve(a, S, vrange=None, x=None, ylim=None, width=1.7, sweep=0.55,
+             axes=True, fill=0.0, gain=2.2, edge=0.22, grid=False):
+    """(n,) or (n, 1) -> the GRAPH of a function: a connected line over x.
+
+    `as_points` splats a cloud and lets density be the picture. That is the
+    right call for 60,000 particles and the wrong one for 400 samples of
+    f(x): a curve is not a cloud, it is an ordered path, and the order is
+    the information. This joins consecutive samples, so a kink is a kink
+    and not a gap between two dots.
+
+      x       the horizontal coordinate, one per sample. Without it the
+              samples are spread evenly over [-1, 1] by index.
+      ylim    (lo, hi), a FIXED vertical window. Leave it None and every
+              frame renormalises to its own range -- which is tidy, and
+              hides exactly the moves you drew the curve to see: y * 2
+              and y + 1 both render as the same picture. Same trap as
+              frame="auto" for clouds.
+      sweep   brightness ramped left to right, so the palette reads as a
+              gradient along the curve rather than one flat hue.
+      fill    0..1, shade the area between the curve and y = 0.
+      width   line thickness in pixels.
+      edge    0..1, how brightly to draw the parts that leave the window.
+              Dropping them entirely makes a curve that went off the top
+              look like a curve that stopped existing -- which is wrong,
+              and is confusing in the middle of a morph. Pinning them to
+              the frame edge at low brightness says "it is up there".
+
+    An (n, 2) array is read as (x, y) pairs, so the same renderer draws a
+    parametric path.
+    """
+    p = np.asarray(a, dtype=float)
+    p = np.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0)
+    if p.ndim == 2 and p.shape[1] >= 2:
+        xs, y = p[:, 0], p[:, 1]
+    else:
+        y = p.reshape(-1)
+        xs = (np.nan_to_num(np.asarray(x, dtype=float).reshape(-1))
+              if x is not None else np.linspace(-1.0, 1.0, len(y)))
+    xs = xs[:len(y)]
+    if len(xs) < len(y):                      # x shorter than the data
+        xs = np.linspace(-1.0, 1.0, len(y))
+
+    lo, hi = ylim if ylim is not None else (vrange if vrange is not None
+                                            else (y.min(), y.max()))
+    if not hi > lo:
+        lo, hi = lo - 1.0, hi + 1.0
+    x0, x1 = float(xs.min()), float(xs.max())
+    if not x1 > x0:
+        x0, x1 = x0 - 1.0, x1 + 1.0
+
+    pad, span = S * 0.07, S * 0.86
+
+    def to_px(u):
+        return (u - x0) / (x1 - x0) * span + pad
+
+    def to_py(v):                             # flipped: up is up
+        return S - ((v - lo) / (hi - lo) * span + pad)
+
+    px, py = to_px(xs), to_py(y)
+    inside = (py >= pad * 0.4) & (py <= S - pad * 0.4)
+    py = np.clip(py, pad * 0.4, S - pad * 0.4)
+    buf = _blank(S)
+
+    if axes:
+        # the two zero lines, faint. a graph with no axis is a squiggle.
+        if lo <= 0.0 <= hi:
+            yz = to_py(0.0)
+            _splat(np.linspace(pad, pad + span, S * 2),
+                   np.full(S * 2, yz), buf, np.full(S * 2, 0.09))
+        if x0 <= 0.0 <= x1:
+            xz = to_px(0.0)
+            _splat(np.full(S * 2, xz),
+                   np.linspace(pad, pad + span, S * 2), buf,
+                   np.full(S * 2, 0.06))
+
+    if fill:
+        # vertical shading between the curve and the baseline
+        base = to_py(0.0) if lo <= 0.0 <= hi else S - pad
+        o = np.argsort(px)
+        cols = np.arange(S)
+        col = np.interp(cols, px[o], py[o])
+        rows = cols[:, None]
+        band = ((rows >= np.minimum(col, base)[None, :])
+                & (rows <= np.maximum(col, base)[None, :]))
+        # only under the curve's own span -- np.interp clamps outside it,
+        # which would shade two rectangles out to the canvas edges
+        band &= ((cols >= px.min()) & (cols <= px.max()))[None, :]
+        buf += fill * band
+
+    # Resample the polyline in PIXEL space so neighbouring samples land less
+    # than a pixel apart. Splatting the raw samples leaves a dotted line
+    # wherever the function is steep -- which is where the shape lives.
+    seg = np.hypot(np.diff(px), np.diff(py))
+    sub = np.clip(np.ceil(seg / 0.5).astype(int), 1, 96)
+    t = np.concatenate([i + np.arange(k) / k for i, k in enumerate(sub)]
+                       + [[len(px) - 1.0]])
+    cx = np.interp(t, np.arange(len(px)), px)
+    cy = np.interp(t, np.arange(len(py)), py)
+    u = t / max(1.0, len(px) - 1)
+    w = (1.0 - sweep) + sweep * u
+    ins = np.interp(t, np.arange(len(inside)), inside.astype(float)) > 0.5
+
+    # The off-window part goes in its OWN buffer. Weighting it down in the
+    # shared one does not work: every clamped sample lands on the same row,
+    # so a long tail piles up hundreds deep and comes out brighter than the
+    # curve however small the weight. Normalise it separately, then dim it.
+    off = _blank(S) if edge else None
+    r = max(0.5, float(width))
+    k = int(np.ceil(r))
+    for dx in range(-k, k + 1):
+        for dy in range(-k, k + 1):
+            d = np.hypot(dx, dy)
+            if d > r:
+                continue
+            ww = w * (1.0 - d / (r + 1.0))
+            _splat(cx[ins] + dx, cy[ins] + dy, buf, ww[ins])
+            if edge:
+                _splat(cx[~ins] + dx, cy[~ins] + dy, off, ww[~ins])
+
+    v = _norm(np.log1p(buf * gain))
+    if edge and off.any():
+        v = np.maximum(v, edge * _norm(np.log1p(off * gain)))
+    return v
+
+
+def as_cells(a, S, vrange=None, slots=0.10, area=True, gap=0.24, aa=1.3,
+             floor=0.28):
+    """(n,) or (m, n) -> one disc per ENTRY. Size is magnitude, colour is value.
+
+    `as_strip` smears a vector into a band and `as_heatmap` interpolates a
+    matrix into a smooth picture. Both are the wrong lens for linear algebra,
+    where the whole point is that there are n separate numbers and an
+    operation moves them around. Here every entry keeps its own slot:
+
+      size    radius from |value| -- by AREA, so a disc twice as wide is
+              twice the number, not four times it
+      colour  the value itself through the palette, so sign and magnitude
+              read independently of size
+
+    `slots` draws the empty lattice faintly behind the discs. Without it an
+    entry that goes to zero looks like an entry that disappeared, and those
+    are very different things.
+    """
+    v = np.asarray(a, dtype=float)
+    v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+    if v.ndim == 1:
+        v = v[None, :]                      # a vector is one row of entries
+    elif v.ndim == 2 and v.shape[1] == 1:
+        v = v.T
+    v = v.reshape(v.shape[0], -1)
+    rows, cols = v.shape
+
+    pitch = min(S * 0.90 / cols, S * 0.90 / rows)
+    rmax = pitch * (1.0 - gap) / 2.0
+    ox = (S - pitch * cols) / 2.0
+    oy = (S - pitch * rows) / 2.0
+
+    mag = np.abs(v)
+    mag = mag / (mag.max() + 1e-12)
+    rad = rmax * (np.sqrt(mag) if area else mag)
+    bright = floor + (1.0 - floor) * _norm(v, vrange)
+
+    buf = _blank(S)
+    yy, xx = np.mgrid[0:S, 0:S]
+
+    def disc(cx, cy, r, w):
+        "Antialiased filled circle, stamped on a local patch only."
+        if r <= 0.2 or w <= 0:
+            return
+        k = int(np.ceil(r + aa + 1))
+        x0, x1 = max(0, int(cx) - k), min(S, int(cx) + k + 1)
+        y0, y1 = max(0, int(cy) - k), min(S, int(cy) + k + 1)
+        if x1 <= x0 or y1 <= y0:
+            return
+        d = np.hypot(xx[y0:y1, x0:x1] - cx, yy[y0:y1, x0:x1] - cy)
+        np.maximum(buf[y0:y1, x0:x1],
+                   w * np.clip((r - d) / aa + 0.5, 0.0, 1.0),
+                   out=buf[y0:y1, x0:x1])
+
+    for i in range(rows):
+        for j in range(cols):
+            cx = ox + pitch * (j + 0.5)
+            cy = oy + pitch * (i + 0.5)
+            disc(cx, cy, float(rad[i, j]), float(bright[i, j]))
+
+    if slots:
+        # the lattice, drawn once as rings at full radius
+        for i in range(rows):
+            for j in range(cols):
+                cx = ox + pitch * (j + 0.5)
+                cy = oy + pitch * (i + 0.5)
+                k = int(np.ceil(rmax + 2))
+                x0, x1 = max(0, int(cx) - k), min(S, int(cx) + k + 1)
+                y0, y1 = max(0, int(cy) - k), min(S, int(cy) + k + 1)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                d = np.hypot(xx[y0:y1, x0:x1] - cx, yy[y0:y1, x0:x1] - cy)
+                r = np.clip(1.0 - np.abs(d - rmax) / 1.2, 0.0, 1.0)
+                np.maximum(buf[y0:y1, x0:x1], slots * r,
+                           out=buf[y0:y1, x0:x1])
+
+    return np.clip(buf, 0, 1)
+
+
 def _paper(S, seed=11):
     """Static fine grain. Deterministic, so it is IDENTICAL every frame --
     that is what makes it read as paper texture rather than film noise."""
@@ -305,7 +509,8 @@ def as_batch(a, S, vrange=None):
 
 BY_NAME = {
     "liquid": as_liquid, "points": as_points, "heatmap": as_heatmap,
-           "strip": as_strip, "batch": as_batch}
+           "strip": as_strip, "batch": as_batch, "curve": as_curve,
+           "cells": as_cells}
 
 
 def coloured_points(values, blend="mean", gain=2.0):
